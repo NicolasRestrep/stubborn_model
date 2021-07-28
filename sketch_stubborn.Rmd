@@ -14,19 +14,37 @@ theme_set(theme_classic())
 
 ## Introduction 
 
-Here, I am going to go through a first sketch of what the "stubborn model" might look like. I am going to go through my modelling decisions in detail, mainly so that mistakes or inconsistencies can become clear. 
+Here, I am going to go through a first sketch of what the "stubborn model" might look like. I am going to go through my modeling decisions in detail, mainly so that mistakes or inconsistencies can become clear. 
 
 ## The setting 
 
 Agents are placed in a context where there are $M$ number of traits. For the sake of this brief sketch, I will use 4 traits. Each trait has an initial continuous value between 0 and 1: 
 
 ```{r}
-traits_init <- tibble( 
-  trait = 1:4, 
-  value = runif(n = 4,
-                     min = 0,
-                     max = 1))
-traits_init
+num_traits <- 4
+num_rounds <- 2
+num_turns <- 100
+
+# Create a matrix first - cols number of traits 
+traits_df <- matrix(NA, 
+                    nrow = num_rounds * num_turns, 
+                    ncol = 2 + num_traits)
+# Change the column names
+colnames(traits_df) <- c("run", 
+                         "generation", 
+                         map_chr(.x = 1:num_traits, ~ paste0("trait", .x)))
+
+# Turn into a tibble for ease of manipulation
+traits_df <- as_tibble(traits_df)
+
+# Populate the dataframe
+traits_df <- traits_df %>% 
+  mutate(run = as.factor(rep(1:num_rounds, each = num_turns)),
+         generation = rep(1:num_turns, num_rounds)) %>% 
+  mutate(across(.cols = 3:ncol(.), as.numeric))
+
+head(traits_df)
+
 ```
 
 Each trait has also a probability of changing. These probabilities are drawn from a distribution with a long right tail. This means that only few traits are likely to have a high probability of changing. To draw these probabilities, I use a beta distribution with parameters $\alpha = 1; \beta = 5$. 
@@ -34,13 +52,13 @@ Each trait has also a probability of changing. These probabilities are drawn fro
 ```{r}
 beta_df <- tibble(
 x =seq(0, 1, by = 0.01),
-y =dbeta(x, 1, 5)
+y =dbeta(x, 0.5, 5)
 )
 beta_df %>% 
   ggplot(aes(x = x, y = y)) + 
   geom_line() + 
   labs(title = "Beta distribution", 
-       subtitle = "alpha = 1; beta = 5")
+       subtitle = "alpha = 0.5; beta = 5")
 
 ```
 
@@ -50,27 +68,45 @@ We have $N$ agents. Each starts with a probabilistically appropriate response to
 
 ```{r}
 N <- 4
-starting_error_sd <- 0.05
-population <- tibble(
-  agent = 1:N, 
-  trait1 = rnorm(mean = 0,
-                 sd = starting_error_sd,
-                 n = N) + rep(traits_init$value[1], N),
-  trait2 = rnorm(mean = 0,
-                 sd = starting_error_sd,
-                 n = N) + rep(traits_init$value[2], N),
-  trait3 = rnorm(mean = 0,
-                 sd = starting_error_sd,
-                 n = N) + rep(traits_init$value[3], N),
-  trait4 = rnorm(mean = 0,
-                 sd = starting_error_sd,
-                 n = N) + rep(traits_init$value[4], N)
-)
-
+# Dataframe for population
+  population <- matrix(NA, 
+                       nrow = N, 
+                       ncol = 3 + num_traits)
+  # Change the column names
+  colnames(population) <- c("prob_soc_learns", 
+                            "prob_ind_learns",
+                            "fitness", 
+                            map_chr(.x = 1:num_traits, ~ paste0("trait", .x)))
+  population <- as_tibble(population)
+  
 population
 ```
 
-The agents can also be either learners or not. Learners will copy the responses of other agents. The proportion of agents who are learners at the beginning of each simulation will be a variable parameter. 
+The agents also have different probabilities of learning. They have a probability of learning socially; that is of copying another agent's response to a given trait. They also have a probability of exploring individually: of directly accessing the true value of the trait. Both probabilities will be drawn from Beta distributions. In this example, I use the following:
+
+```{r}
+beta_df <- tibble(
+x =seq(0, 1, by = 0.01),
+y =dbeta(x, 2, 5)
+)
+beta_df %>% 
+  ggplot(aes(x = x, y = y)) + 
+  geom_line() + 
+  labs(title = "Probability of learning socially", 
+       subtitle = "alpha = 2; beta = 5")
+
+beta_df <- tibble(
+x =seq(0, 1, by = 0.01),
+y =dbeta(x, 0.8, 5)
+)
+beta_df %>% 
+  ggplot(aes(x = x, y = y)) + 
+  geom_line() + 
+  labs(title = "Probability of learning individually", 
+       subtitle = "alpha = 0.8; beta = 5")
+
+```
+
 
 ## Each turn 
 
@@ -78,99 +114,111 @@ Now, I am going to go through what will happen on each turn.
 
 ### Change traits 
 
-The first step is to determine whether traits will change. They are updated if the outcome of a Bernoulli trial with probability equal to the probabilities drawn above is successful. This will look like this. 
+The first step is to determine whether traits will change. They are updated if the outcome of a Bernoulli trial with probability equal to the probabilities drawn above is successful. If they change, their values are redrawn from a Uniform distribution [0,1].
 
-```{r}
-# Probability of change for each trait 
-pr_change <- rbeta(n = 4, 
-                   1, 
-                   5)
-# Do the traits change? 
-traits_change <- rbinom(n = 4, 
-       size = 1, 
-       prob = pr_change)
-
-u <- 0.05
-# Update the traits by u 
-updated_traits <- traits_init+traits_change*u
+```{r, eval=FALSE}
+# 1. Change in traits? 
+    # Do the traits change? 
+    traits_change <- rbinom(n = 4, 
+                            size = 1, 
+                            prob = pr_change)
+    
+    if(t == 1) { 
+      traits_df[traits_df$run==j&traits_df$generation==t,c(which(traits_change==1)+2)] <- as.list(runif(sum(traits_change)))
+    } else { 
+      traits_df[traits_df$run==j&traits_df$generation==t,3:ncol(traits_df)] <- traits_df[traits_df$run==j&traits_df$generation==t-1,3:ncol(traits_df)]
+      traits_df[traits_df$run==j&traits_df$generation==t,c(which(traits_change==1)+2)] <- as.list(runif(sum(traits_change)))
+    }
 ```
-
-The parameter $u$ here controls how much the starting values change every time they are updated. 
 
 ### Learning 
 
-Then we draw a trait, which will be the one that agents will be responding to on this particular turn. The agents who are 'learners' take a random agent and copy the latter's response to the chosen trait. This is what that will look like: 
+Then we draw a trait, which will be the one that agents will be responding to on this particular turn. Then the agents learn with probability equal to their own propensity to learn. If they learn socially, they copy another random agent's response to the chosen trait. If they explore individually, they access the environment directly. The parameter `sd_exploration` controls how accurately agents learn from the environemt. This is what that will look like: 
 
 ```{r, eval=FALSE}
 # 2. Draw trait & learning 
-# One trait gets drawn 
-current_trait <- sample(1:4, 
-                        size = 1)
-# How many updaters?
-learners <- which(population[,"learns"]=="yes")
-# Update these agents' response to the drawn trait
-population[learners, current_trait+1] <- sample(population[,current_trait+1][[1]],
-       length(learners))
+    # One trait gets drawn 
+    current_trait <- sample(1:4, 
+                            size = 1)
+    # How many social learners?
+    learns <- rbinom(n = N, 
+                     size = 1, 
+                     prob = population$prob_soc_learns)
+    # Update these 
+    population[which(learns == 1),current_trait+3] <- sample(population[,current_trait+3][[1]],
+                                                             sum(learns))
+    
+    # Now see who explores individually 
+    explorers <- rbinom(n = N, 
+                        size = 1, 
+                        prob = population$prob_ind_learns)
+    
+    # Explorers get knowledge of the trait with some error
+    population[which(explorers == 1),current_trait+3] <- rnorm(n = sum(explorers), 
+                                                               mean = traits_df[traits_df$run==j&traits_df$generation==t,current_trait+2][[1]], 
+                                                               sd = sd_exploration)
 ```
 
 ### Calculate fitness 
 
 Now, we want to calculate the fitness of the agents. The fitness should be inversely proportional to the distance between the actual value of the trait and the agent's response to it. So, the further away an agent's response is to the value of the trait, the lower its fitness. 
 
-There are a couple of decisions we have to make here: 
+We can implement this as follows: 
 
-- the baseline fertility of each agent. 
-- how costly distance should be. 
-
-This is how the implementation might look like: 
+$$ fitness = 1 - \frac{|traitvalues - agentresponses|}{M} $$
+where M = the number of traits. 
 
 ```{r, eval=FALSE}
 # 3. Calculate fitness 
-# Get difference between trait and response 
-differences_trait_response <- abs(updated_traits[current_trait] - population[,current_trait+1][[1]])
-# Add this to the population (baseline + cost of diff)
-population$fitness <- baseline_fertility-cost_dist*differences_trait_response
+    
+    # Get difference between all traits and responses  
+    # First get a matrix of the current values of the traits 
+    # Same number of rows as agents 
+    traits_mat <- matrix(unlist(rep(traits_df[traits_df$run==j&traits_df$generation==t,
+                                              3:(2+num_traits)][,1:num_traits], N)), 
+                         nrow = N, 
+                         ncol = num_traits, 
+                         byrow = T)
+    
+    # Now the fitness will be:
+    # 1- the sum of absolute distances / M
+    population$fitness <- 1-(rowSums(abs(population[4:ncol(population)] - traits_mat))/num_traits)
+
+    
+    # if fitnesses below 0 then 0
+    
+    population[population$fitness<=0,'fitness'] <- 0
 ```
 
 ### Reproduction 
 
-Based on the fitness we just calculated, we make individuals reproduce. For this first sketch, I will keep the population stable. This means we can think about each turn that passes as giving rise to a new generation. 
+Based on the fitness we just calculated, we make individuals reproduce. For this first sketch, I will keep the population stable. 
 
-To implement reproduction, I first calculate the fitness of the learners in the population. To do this, I take the fitness of the learners and divide it over the total fitness of the population. 
-
-Then, the new agents are learners with probability equal to the fitness of the learners. Responses to the traits are inherited directly from the parents. 
+Agents will reproduce every certain number of turns and we can tune this in our parameter exploration. They will reproduce with probability equal to their fitness. The offspring will inherit traits and learning propensity from their parents. When agents die they are replaced by new individuals with re-initialized traits and learning probabilities. 
 
 ```{r, eval = FALSE}
-# Collective fitness of learners
-if(sum(previous_population$learns=="yes") > 0) {
-  fitness_L <- sum(previous_population[previous_population$learns=="yes","fitness"])/sum(previous_population$fitness)
-} else {
-  fitness_L <- 0
-}
-
-# New strategies 
-# According to fitness of non-learners
-population$learns <- sample(c("yes", "no"),
-                            size = 100, 
-                            prob = c(fitness_L, 1-fitness_L), 
-                            replace = TRUE)
-
-```
-
-### Exploration 
-
-The last thing that happens is that a certain percentage of non-learners become learners through "exploration". This occurs with a probability $p_{explore}$ that is a modifiable parameter: 
-
-```{r, eval=FALSE}
-# Individual exploration 
-explores <- sample(c(TRUE, FALSE), 
-                   100, 
-                   prob = c(p_explore, 1-p_explore), 
-                   replace = T)
-
-previous_population2 <- population
-population$learns[previous_population2$learns == "no" & 
-                    explores] <- "yes"
+# 5. Reproduction
+    previous_population <- population
+    population$fitness <- as.numeric(NA)
+    
+    if(t %% 1 == 0) {
+    # Which ones survive?
+    survivors <- rbinom(n = N, 
+                        size = 1, 
+                        prob = previous_population$fitness)
+    # They reproduce 
+    population[which(survivors==1),] <- previous_population[which(survivors==1),]
+    
+    # The rest get values re-initialized 
+    population[which(survivors==0),"prob_soc_learns"] <- rbeta(sum(survivors==0), 2, 5)
+    population[which(survivors==0), "prob_ind_learns"] <- rbeta(sum(survivors==0), 0.8, 5)
+    for (k in 1:num_traits) {
+      population[which(survivors==0),3+k] <- rnorm(n = sum(survivors==0),
+                                                   mean = output[output$run==1 & 
+                                                                   output$generation==1,5+k][[1]],
+                                                   sd = starting_error_sd)
+    }
+    }
 ```
 
 Now, we are at a point where we can put all this together and run this sketch. 
@@ -184,157 +232,191 @@ stubborn_model <- function(num_traits = 4,
                            num_turns = 200,
                            num_rounds = 2,
                            N = 100,
-                           prob_learner = 0.1,
-                           starting_error_sd = 0.01,
-                           baseline_fertility = 2,
-                           cost_dist = 1,
-                           p_explore = 0.001) { 
+                           sd_exploration = 0.01,
+                           starting_error_sd = 0.01) { 
+  #### Set-Up ####
+
+# Keep record 
+# Create a matrix first - cols number of traits 
+traits_df <- matrix(NA, 
+                    nrow = num_rounds * num_turns, 
+                    ncol = 2 + num_traits)
+# Change the column names
+colnames(traits_df) <- c("run", 
+                         "generation", 
+                         map_chr(.x = 1:num_traits, ~ paste0("trait", .x)))
+
+# Turn into a tibble for ease of manipulation
+traits_df <- as_tibble(traits_df)
+
+# Populate the dataframe
+traits_df <- traits_df %>% 
+  mutate(run = as.factor(rep(1:num_rounds, each = num_turns)),
+         generation = rep(1:num_turns, num_rounds)) %>% 
+  mutate(across(.cols = 3:ncol(.), as.numeric))
+
+
+# Output for the model
+output <- matrix(NA, 
+                 nrow = num_rounds * num_turns, 
+                 ncol = 5 + num_traits)
+
+# Name the columns 
+colnames(output) <- c("run", 
+                      "generation", 
+                      "avg_soc_learning_prob",
+                      "avg_ind_learning_prob", 
+                      "avg_fitness",
+                      map_chr(.x = 1:num_traits, ~ paste0("mean_trait", .x)))
+output <- as_tibble(output)
+# Populate the dataframe
+output <- output %>% 
+  mutate(run = as.factor(rep(1:num_rounds, each = num_turns)),
+         generation = rep(1:num_turns, num_rounds)) %>% 
+  mutate(across(.cols = 3:ncol(.), as.numeric))
+
+
+ #### The Model ####
+for (j in 1:num_rounds) {
   # Probabilities that each trait changes
   pr_change <- rbeta(n = num_traits, 
-                     1, 
+                     0.1, 
                      5)
+  
   # Draw initial values for the traits 
   traits_init <- runif(n = num_traits,
                        min = 0,
                        max = 1)
-  # Keep record 
-  traits_df <- tibble(run = as.factor(rep(1:num_rounds, each = num_turns)),
-                      generation = rep(1:num_turns, num_rounds), 
-                      trait1 = as.numeric(rep(NA, num_rounds * num_turns)),
-                      trait2 = as.numeric(rep(NA, num_rounds * num_turns)), 
-                      trait3 = as.numeric(rep(NA, num_rounds * num_turns)), 
-                      trait4 = as.numeric(rep(NA, num_rounds * num_turns)))
-  traits_df[1,3:6] <- as.list(traits_init)
+  traits_df[traits_df$run==j&traits_df$generation==1,3:ncol(traits_df)] <- as.list(traits_init)
+  # Dataframe for population
+  population <- matrix(NA, 
+                       nrow = N, 
+                       ncol = 3 + num_traits)
+  # Change the column names
+  colnames(population) <- c("prob_soc_learns", 
+                            "prob_ind_learns",
+                            "fitness", 
+                            map_chr(.x = 1:num_traits, ~ paste0("trait", .x)))
+  population <- as_tibble(population)
   
-  # Output for the model
-  output <- tibble(
-    run = as.factor(rep(1:num_rounds, each = num_turns)),
-    generation = rep(1:num_turns, num_rounds),
-    perc_learners = as.numeric(rep(NA, num_rounds * num_turns)),
-    avg_fitness = as.numeric(rep(NA, num_rounds * num_turns)),
-    mean_trait1 = as.numeric(rep(NA, num_rounds * num_turns)),
-    mean_trait2 = as.numeric(rep(NA, num_rounds * num_turns)),
-    mean_trait3 = as.numeric(rep(NA, num_rounds * num_turns)),
-    mean_trait4 = as.numeric(rep(NA, num_rounds * num_turns))
-  )
+  population <- population %>% 
+    mutate(prob_soc_learns = rbeta(N, 2, 5),
+           prob_ind_learns = rbeta(N, 0.8, 5),
+           across(.cols = 2:ncol(.), as.numeric))
   
-  for (j in 1:num_rounds) {
+  # List of starting values (with slight error)
+  list_starting_values <- map(.x = 1:num_traits,
+                              ~ rnorm(mean = 0,
+                                      sd = starting_error_sd,
+                                      n = N) + rep(traits_init[.x], N))
+  # Assign starting values 
+  for (s in 1:num_traits) {
+    population[,s+3] <- list_starting_values[[s]]
+  }
+
+  for (t in 1:num_turns) {
+    #### One turn ####
     
-    population <- tibble(
-      learns = sample(
-        size = N,
-        c("yes", "no"),
-        prob = c(prob_learner, 1 - prob_learner),
-        replace = TRUE
-      ),
-      trait1 = rnorm(mean = 0,
-                     sd = starting_error_sd,
-                     n = N) + rep(traits_init[1], N),
-      trait2 = rnorm(mean = 0,
-                     sd = starting_error_sd,
-                     n = N) + rep(traits_init[2], N),
-      trait3 = rnorm(mean = 0,
-                     sd = starting_error_sd,
-                     n = N) + rep(traits_init[3], N),
-      trait4 = rnorm(mean = 0,
-                     sd = starting_error_sd,
-                     n = N) + rep(traits_init[4], N),
-      fitness = as.numeric(NA)
-    )
+    # 1. Change in traits? 
+    # Do the traits change? 
+    traits_change <- rbinom(n = 4, 
+                            size = 1, 
+                            prob = pr_change)
     
-    
-    for (t in 1:num_turns) {
-      #### One turn ####
-      
-      # 1. Change in traits? 
-      # Do the traits change? 
-      traits_change <- rbinom(n = 4, 
-                              size = 1, 
-                              prob = pr_change)
-      
-      if(t == 1 ) { 
-        updated_traits <- as.list(traits_init+traits_change*0.05)
-        traits_df[traits_df$run==j&traits_df$generation==t,3:6] <- updated_traits
-      } else { 
-        updated_traits <- as.list(traits_df[traits_df$run==j&traits_df$generation==t-1,3:6]+traits_change*0.05)
-        # Record these changes 
-        traits_df[traits_df$run==j&traits_df$generation==t,3:6] <- updated_traits
-      }
-      # 2. Draw trait & learning 
-      # One trait gets drawn 
-      current_trait <- sample(1:4, 
-                              size = 1)
-      # How many updaters
-      learners <- which(population[,"learns"]=="yes")
-      
-      # Update these 
-      population[learners, current_trait+1] <- sample(population[,current_trait+1][[1]],
-                                                      length(learners))
-      
-      # Record the means 
-      output[output$generation==t & 
-               output$run==j,]$mean_trait1 <- mean(population$trait1)
-      output[output$generation==t & 
-               output$run==j,]$mean_trait2 <- mean(population$trait2)
-      output[output$generation==t & 
-               output$run==j,]$mean_trait3 <- mean(population$trait3)
-      output[output$generation==t & 
-               output$run==j,]$mean_trait4 <- mean(population$trait4)
-      
-      
-      
-      # 3. Calculate fitness 
-      # Get difference between trait and response 
-      differences_trait_response <- abs(updated_traits[[current_trait]] - population[,current_trait+1][[1]])
-      # Add this to the population (baseline + cost of diff)
-      population$fitness <- baseline_fertility-cost_dist*differences_trait_response
-      
-      # if fitnesses below 0 then 0
-      
-      population[population$fitness<=0,'fitness'] <- 0
-      
-      # If all fitnesses are 0, everyone dies
-      if (sum(population$fitness)<= 0) {
-        print("Everyone died!")
-        break
-      }
-      
-      # 4. Store population characteristics 
-      output[output$generation==t & 
-               output$run==j,]$avg_fitness <- mean(population$fitness, na.rm = T)
-      output[output$generation==t & 
-               output$run==j,]$perc_learners <- mean(population$learns=="yes")
-      
-      # 5. Reproduction
-      previous_population <- population
-      population$fitness <- NA
-      
-      # Collective fitness of non-learners
-      if(sum(previous_population$learns=="yes") > 0) {
-        fitness_L <- sum(previous_population[previous_population$learns=="yes","fitness"])/sum(previous_population$fitness)
-      } else {
-        fitness_L <- 0
-      }
-      
-      # New strategies 
-      # According to fitness of non-learners
-      population$learns <- sample(c("yes", "no"),
-                                  size = N, 
-                                  prob = c(fitness_L, 1-fitness_L), 
-                                  replace = TRUE)
-      
-      # Individual exploration 
-      explores <- sample(c(TRUE, FALSE), 
-                         100, 
-                         prob = c(p_explore, 1-p_explore), 
-                         replace = T)
-      
-      previous_population2 <- population
-      population$learns[previous_population2$learns == "no" & 
-                          explores] <- "yes"
+    if(t == 1) { 
+      traits_df[traits_df$run==j&traits_df$generation==t,c(which(traits_change==1)+2)] <- as.list(runif(sum(traits_change)))
+    } else { 
+      traits_df[traits_df$run==j&traits_df$generation==t,3:ncol(traits_df)] <- traits_df[traits_df$run==j&traits_df$generation==t-1,3:ncol(traits_df)]
+      traits_df[traits_df$run==j&traits_df$generation==t,c(which(traits_change==1)+2)] <- as.list(runif(sum(traits_change)))
     }
     
+    # 2. Draw trait & learning 
+    # One trait gets drawn 
+    current_trait <- sample(1:4, 
+                            size = 1)
+    # How many social learners?
+    learns <- rbinom(n = N, 
+                     size = 1, 
+                     prob = population$prob_soc_learns)
+    # Update these 
+    population[which(learns == 1),current_trait+3] <- sample(population[,current_trait+3][[1]],
+                                                             sum(learns))
+    
+    # Now see who explores individually 
+    explorers <- rbinom(n = N, 
+                        size = 1, 
+                        prob = population$prob_ind_learns)
+    
+    # Explorers get knowledge of the trait with some error
+    population[which(explorers == 1),current_trait+3] <- rnorm(n = sum(explorers), 
+                                                               mean = traits_df[traits_df$run==j&traits_df$generation==t,current_trait+2][[1]], 
+                                                               sd = sd_exploration)
+    # Record the means 
+    for (m in 1:num_traits) {
+      output[output$generation==t & 
+               output$run==j,m+5] <- mean(population[[m+3]])
+    }
+    
+    # 3. Calculate fitness 
+    
+    # Get difference between all traits and responses  
+    # First get a matrix of the current values of the traits 
+    # Same number of rows as agents 
+    traits_mat <- matrix(unlist(rep(traits_df[traits_df$run==j&traits_df$generation==t,
+                                              3:(2+num_traits)][,1:num_traits], N)), 
+                         nrow = N, 
+                         ncol = num_traits, 
+                         byrow = T)
+    
+    # Now the fitness will be:
+    # 1- the sum of absolute distances / M
+    population$fitness <- 1-(rowSums(abs(population[4:ncol(population)] - traits_mat))/num_traits)
+
+    
+    # if fitnesses below 0 then 0
+    
+    population[population$fitness<=0,'fitness'] <- 0
+    
+    # If all fitnesses are 0, everyone dies
+    if (sum(population$fitness)<= 0) {
+      print("Everyone died!")
+      break
+    }
+    
+    # 4. Store population characteristics 
+    output[output$generation==t & 
+             output$run==j,]$avg_fitness <- mean(population$fitness, na.rm = T)
+    output[output$generation==t & 
+             output$run==j,]$avg_soc_learning_prob <- mean(population$prob_soc_learns)
+    output[output$generation==t & 
+             output$run==j,]$avg_ind_learning_prob <- mean(population$prob_ind_learns)
+    
+    
+    # 5. Reproduction
+    previous_population <- population
+    population$fitness <- as.numeric(NA)
+    
+    if(t %% 1 == 0) {
+    # Which ones survive?
+    survivors <- rbinom(n = N, 
+                        size = 1, 
+                        prob = previous_population$fitness)
+    # They reproduce 
+    population[which(survivors==1),] <- previous_population[which(survivors==1),]
+    
+    # The rest get values re-initialized 
+    population[which(survivors==0),"prob_soc_learns"] <- rbeta(sum(survivors==0), 2, 5)
+    population[which(survivors==0), "prob_ind_learns"] <- rbeta(sum(survivors==0), 0.8, 5)
+    for (k in 1:num_traits) {
+      population[which(survivors==0),3+k] <- rnorm(n = sum(survivors==0),
+                                                   mean = output[output$run==1 & 
+                                                                   output$generation==1,5+k][[1]],
+                                                   sd = starting_error_sd)
+    }
+    }
   }
+  
+}
   
   return(list(output, 
               traits_df, 
@@ -347,8 +429,7 @@ Now, I am going to run it to a few runs, and visualize some of the variables tha
 
 ```{r}
 set.seed(76)
-results <- stubborn_model(num_rounds = 4, 
-                          baseline_fertility = 4)
+results <- stubborn_model(num_rounds = 4)
 ```
 
 I'll begin by looking at the average fitness of the population across the generations, for each run. 
@@ -367,11 +448,13 @@ pop_df %>%
 
 ```
 
-There are a couple things to note here. First, the lines jump quite a lot. I think this variance is due to the fact that some traits change a lot while others don't. When the 'stable' traits are drawn, the fitness is quite high. However, when the 'changing' traits are drawn, suddenly the population fitness drops. Maybe this is an interesting feature of this model or maybe we want to think about fitness as an aggregate of all responses and their distance to their respective traits. 
+There are a couple of things to notice here. We notice that in general these lines are quite stable; all the lines hover between 0.6  and 0.9. This makes sense given that the traits probability of changing is not that high. Moreover, when traits change, they are re-initialized, so there is a chance that they will go to a value that is close to the average agent's response. 
 
-The second thing is that the baseline fitness had to be quite high for the population to "withstand" the drop in fitness during the generations when the changing trait shows up. Again, this might be interesting in and of itself and starts getting to the question of when change might be necessary. But the question of how to approach these drops in fitness is interesting. 
+There are two runs that are noticeably stable, 2 and 4. However, the former stabilizes around a relatively low average fitness. We might suspect that this is a case where traits changed a few times, away from the modal agent's response. Because the agents' exploration is limited, they were never quite able to lock into an ideal response again. 
 
-I am going to now look at how the traits themselves changed across the runs. I will compare this with how the populations' responses also shifted. 
+The other two runs display considerably more variance. I expect that that the values of traits here varied with more frequency. 
+
+I am going to now look at how the traits themselves changed across the runs. 
 
 ```{r, echo = FALSE}
 traits_df <- results[[2]]
@@ -380,7 +463,7 @@ traits_long <- traits_df %>%
                names_to = "trait", 
                values_to = "value")
 pop_long <- pop_df %>% 
-  pivot_longer(5:8, 
+  pivot_longer(6:9, 
                names_to = "trait", 
                values_to = "pop_value") %>% 
   select(pop_value)
@@ -392,41 +475,36 @@ full_df %>%
   ggplot(aes(x = generation, 
              y = value, 
              col = trait)) + 
-  geom_line(alpha = 0.5) +
-  geom_line(aes(x = generation, 
-                y = pop_value, 
-                col = trait), 
-            linetype = "dashed") +
+  geom_line(alpha = 0.5)  +
   facet_wrap(~run) + 
   labs(y = "Value of trait", 
-       title = "Traits & Responses across Generations", 
-       caption = "responses in dashed lines")
+       title = "Traits across Generations")
   
 
 ```
 
-We notice that the responses do not change across runs. We don't have a high percentage of learners to begin with. And most learners copy each other, we don't have anyone with "direct" access to the actual value of the trait. Traits, on the other hand, develop across the simulations. 
+As we suspected, runs 1 and 3 display a lot more change than the remaining two. In the first run, all traits seem to have a relatively high probability of changing. In the third run, one of the traits moves around quite a lot. In the other two runs, we only see one change across all turns. 
 
-I want to highlight that runs 1 & 3 are the ones where the difference between responses and traits is the sharpest. This is especially the case for trait 4. If we go back to the average fitness plots, we notice that these runs exhibit particularly sharp declines and climbs in fitness, especially towards the end of the simulations. I think this might be a promising insight. 
+Let's see how the agents' responses developed across the simulations. 
 
-Last, I am going to plot the percentage of learners across each run. 
-
-```{r, echo = FALSE}
-pop_df %>% 
+```{r}
+full_df %>% 
   ggplot(aes(x = generation, 
-             y = perc_learners)) +
-  geom_line() + 
-  facet_wrap(~run) +
-  labs(x = 'Generation', 
-       y = "% Learners", 
-       title = "Learners across generations")
-
-
+             y = pop_value, 
+             col = trait)) + 
+  geom_line(alpha = 0.5)  +
+  facet_wrap(~run) + 
+  labs(y = "Agents' Responses", 
+       title = "Responses across Generations")
 
 ```
 
-Notice that in run 2, the whole population becomes a learner. But the average value of the responses doesn't change. This is because everyone is learning socially; no agent has direct access to the traits yet. This is something we definitely want to incorporate in future iterations. 
+Notice the changes of trait 3 in the third run and of trait 4 in the fourth one. They roughly correspond to the changes we noticed above. But the response is fairly modest; this reflects perhaps the low probability of learning and exploration that agents have. 
 
-## Conclusion 
+## Future directions
 
-This is just a first sketch. Hopefully it serves as a jumping off point to talk about what this model should (or should not) include. Already some interesting quantities of values emerge: the distance between the trait and the response, and its relationship to sudden dips in fitness in a population. 
+In general there are a couple of things that I would like to fix: 
+
+- The agents' reproductive dynamics are a bit clunky still. 
+
+- Maybe agents' probabilities of learning (socially and individually) should also evolve?
