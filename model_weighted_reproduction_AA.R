@@ -37,6 +37,10 @@ stubborn_model <- function(num_traits = 4,
                        0.1, 
                        5)
     
+    # TEST HERE!!!
+    pr_change = rep(0, num_traits)
+    # 
+    
     # Draw initial values for the traits 
     traits_init <- runif(n = num_traits,
                          min = 0,
