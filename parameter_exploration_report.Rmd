@@ -1,0 +1,738 @@
+---
+title: "Parameter Exploration"
+author: "Nicolas Restrepo"
+date: "10/15/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+library(tidyverse)
+library(patchwork)
+theme_set(theme_bw())
+```
+
+## Introduction 
+
+Here, I am going to begin exploring the parameter space with our model. The main idea is to check whether the model is behaving in expected ways, and perhaps to see whether there are interesting patterns that might suggest what kind of hypohteses are worth exploring. 
+
+I will begin by looking at the model without any kind of genetic algorithm. Essentially, here we are just asking how different propensities to learn - socially and individually - interact with more or less changing environments. Then, I will move on to explore a model that does involve some genetic reproduction. This is just to illustrate what kind of questions we might be able to ask from such a model. 
+
+## Simple Model
+
+The model at this point looks very similar to the code that you modified on the Github. The only change is that the genetic part is option and becomes a parameter. Thus, when `genetic = FALSE`, then we get a model without any genetic reproduction. This means that agents' probability of learning - socially and individually - does not change across the simulation. Just as a reminder, this is what the model code looks like: 
+
+```{r, echo=TRUE}
+#### Model ####
+stubborn_model <- function(num_traits = 4,
+                           num_turns = 200,
+                           num_rounds = 2,
+                           N = 100,
+                           sd_exploration = 0.01,
+                           starting_error_sd = 0.01,
+                           alpha_pr_change = 0.5,
+                           alpha_psl = 2,
+                           alpha_pil = 0.8,
+                           genetic = TRUE) {
+  #### Set-Up ####
+
+  # Keep record
+  # Create a matrix first - cols number of traits
+  traits_df <- matrix(NA,
+                      nrow = num_rounds * num_turns,
+                      ncol = 2 + num_traits)
+  # Change the column names
+  colnames(traits_df) <- c("run",
+                           "generation",
+                           map_chr(.x = 1:num_traits, ~ paste0("trait", .x)))
+
+  # Turn into a tibble for ease of manipulation
+  traits_df <- data.frame(traits_df)
+
+  # Populate the dataframe
+  traits_df <- traits_df %>%
+    mutate(run = as.factor(rep(1:num_rounds, each = num_turns)),
+           generation = rep(1:num_turns, num_rounds)) %>%
+    mutate(across(.cols = 3:ncol(.), as.numeric))
+
+
+  # Output for the model
+  output <- matrix(NA,
+                   nrow = num_rounds * num_turns,
+                   ncol = 5 + num_traits)
+
+  # Name the columns
+  colnames(output) <- c("run",
+                        "generation",
+                        "avg_soc_learning_prob",
+                        "avg_ind_learning_prob",
+                        "avg_fitness",
+                        map_chr(.x = 1:num_traits, ~ paste0("mean_trait", .x)))
+  output <- data.frame(output)
+  # Populate the dataframe
+  output <- output %>%
+    mutate(run = as.factor(rep(1:num_rounds, each = num_turns)),
+           generation = rep(1:num_turns, num_rounds)) %>%
+    mutate(across(.cols = 3:ncol(.), as.numeric))
+
+  # Data frame to keep track of pr_change
+  probs_df <- matrix(data = NA,
+                     ncol = num_traits + 1,
+                     nrow = num_rounds)
+  colnames(probs_df) <- c("round",
+                          "trait1",
+                          "trait2",
+                          "trait3",
+                          "trait4")
+  probs_df <- data.frame(probs_df)
+  #### The Model ####
+  for (j in 1:num_rounds) {
+    print(paste0("working on: ",
+                 "change: ",
+                 alpha_pr_change,
+                 "social: ",
+                 alpha_psl,
+                 "individual: ",
+                 alpha_pil,
+                 "round: ",
+                 j))
+    # Probabilities that each trait changes
+    pr_change <- rbeta(n = num_traits,
+                       shape1 = alpha_pr_change,
+                       shape2 = 5)
+    probs_df[j,] <- c(j, pr_change)
+
+    # Draw initial values for the traits
+    traits_init <- runif(n = num_traits,
+                         min = 0,
+                         max = 1)
+    traits_df[traits_df$run==j&traits_df$generation==1,3:ncol(traits_df)] <- c(traits_init)
+    # Dataframe for population
+    population <- matrix(NA,
+                         nrow = N,
+                         ncol = 3 + num_traits)
+    # Change the column names
+    colnames(population) <- c("prob_soc_learns",
+                              "prob_ind_learns",
+                              "fitness",
+                              map_chr(.x = 1:num_traits, ~ paste0("trait", .x)))
+    population <- data.frame(population)
+
+    population <- population %>%
+      mutate(prob_soc_learns = rbeta(N, alpha_psl, 5),
+             prob_ind_learns = rbeta(N, alpha_pil, 5),
+             across(.cols = 2:ncol(.), as.numeric))
+
+    # List of starting values (with slight error)
+    list_starting_values <- map(.x = 1:num_traits,
+                                ~ rnorm(mean = 0,
+                                        sd = starting_error_sd,
+                                        n = N) + rep(traits_init[.x], N))
+    # Assign starting values
+    for (s in 1:num_traits) {
+      population[,s+3] <- list_starting_values[[s]]
+    }
+
+    for (t in 1:num_turns) {
+      #### One turn ####
+
+      # 1. Change in traits?
+      # Do the traits change?
+      traits_change <- rbinom(n = num_traits,
+                              size = 1,
+                              prob = pr_change)
+
+      if(t == 1) {
+        traits_df[traits_df$run==j&traits_df$generation==t,c(which(traits_change==1)+2)] <- c(runif(sum(traits_change)))
+      } else {
+        traits_df[traits_df$run==j&traits_df$generation==t,3:ncol(traits_df)] <- traits_df[traits_df$run==j&traits_df$generation==t-1,3:ncol(traits_df)]
+        traits_df[traits_df$run==j&traits_df$generation==t,c(which(traits_change==1)+2)] <- c(runif(sum(traits_change)))
+      }
+
+      # 2. Draw trait & learning
+      # One trait gets drawn
+      current_trait <- sample(1:num_traits,
+                              size = 1)
+      # How many social learners?
+      learns <- rbinom(n = N,
+                       size = 1,
+                       prob = population$prob_soc_learns)
+      # Update these
+      population[which(learns == 1),current_trait+3] <- sample(population[,current_trait+3],
+                                                               sum(learns))
+
+      # Now see who explores individually
+      explorers <- rbinom(n = N,
+                          size = 1,
+                          prob = population$prob_ind_learns)
+
+      # Explorers get knowledge of the trait with some error
+      population[which(explorers == 1),current_trait+3] <- rnorm(n = sum(explorers),
+                                                                 mean = traits_df[traits_df$run==j&traits_df$generation==t,current_trait+2],
+                                                                 sd = sd_exploration)
+      # Record the means
+      for (m in 1:num_traits) {
+        output[output$generation==t &
+                 output$run==j,m+5] <- mean(population[[m+3]])
+      }
+
+      # 3. Calculate fitness
+      # Get difference between chosen trait and responses
+      population$fitness <- 1-abs(population[,3+current_trait] - traits_df[traits_df$run==j&traits_df$generation==t,
+                                                                                2+current_trait])
+      # if fitnesses below 0 then 0
+
+      population[population$fitness<=0,'fitness'] <- 0
+
+      # If all fitnesses are 0, everyone dies
+      if (sum(population$fitness)<= 0) {
+        print("Everyone died!")
+        break
+      }
+
+      # 4. Store population characteristics
+      output[output$generation==t &
+               output$run==j,]$avg_fitness <- mean(population$fitness, na.rm = T)
+      output[output$generation==t &
+               output$run==j,]$avg_soc_learning_prob <- mean(population$prob_soc_learns)
+      output[output$generation==t &
+               output$run==j,]$avg_ind_learning_prob <- mean(population$prob_ind_learns)
+
+
+      # 5. Reproduction
+      if(genetic == TRUE) {
+        if(t %% 1 == 0) {
+          std_fitness <- population$fitness/sum(population$fitness)
+
+          new_children <- sample(1:100,
+                                 100,
+                                 replace = T,
+                                 prob = std_fitness)
+
+          previous_population <- population
+
+          for (i in 1:100) {
+            population[i,] <- previous_population[new_children[i],]
+          }
+
+          population$fitness <- as.numeric(NA)
+
+        }
+      }
+    }
+
+  }
+
+  return(list(output,
+              traits_df,
+              probs_df))
+}
+```
+
+I will explore the following three parameters: 
+
+1) The alpha parameter of the Beta distribution that determines the probabilities of traits changing. 
+
+2) The alpha parameter of the Beta distribution that determines the probabilities of individual learning. 
+
+3) The alpha parameter of the Beta distribution that determines the probabilities of social learning. 
+
+For each parameter I will be exploring numbers 1 through 10. This makes for a total of 1000 parameter combinations. This is what the ten Beta distributions for each of the 10 $\alpha$s look like: 
+
+```{r}
+
+rand_values <- c()
+for (i in 1:10) {
+vs <- rbeta(10000, shape1 = i, shape2 = 5)
+rand_values <- c(rand_values, vs)
+}
+
+df <- data.frame(value = rand_values, 
+                 alpha = rep(1:10, each = 10000))
+df %>% 
+  ggplot(aes(x = value, fill = as.factor(alpha))) +
+  geom_density(alpha = 0.5) + 
+  facet_wrap(~alpha) + 
+  theme(legend.position = "none") + 
+  labs(x = "", 
+       y = "", 
+       title = "Different Beta Distributions")
+
+
+```
+
+Let's get a first idea of how the model does under different extreme conditions. These are 4 runs where the traits do not change and the the agents have zero probability of learning. 
+```{r}
+plot_outcome <- function(df, var_int) {
+  if(var_int == "ind_learning"){
+    df %>% 
+      ggplot(aes(x = generation, 
+                 y = avg_ind_learning_prob)) +
+      geom_line() + 
+      facet_wrap(~run) +
+      labs(x = 'Generation', 
+           y = "Avg. Probability", 
+           title = "Individual learning across generations")
+  } else if (var_int == "soc_learning"){
+    df %>% 
+      ggplot(aes(x = generation, 
+                 y = avg_soc_learning_prob)) +
+      geom_line() +
+      facet_wrap(~run) +
+      labs(x = 'Generation', 
+           y = "Avg. Probability", 
+           title = "Social learning across generations")
+  } else if(var_int == "avg_fitness") {
+    df %>% 
+      ggplot(aes(x = generation, 
+                 y = avg_fitness)) +
+      geom_line() + 
+      facet_wrap(~run) +
+      labs(x = 'Generation', 
+           y = "Avg. Fitness", 
+           title = "Fitness across generations")
+  }
+}
+set.seed(33)
+results <- stubborn_model(num_rounds = 4, 
+                          num_turns = 200, 
+                          alpha_pr_change = 0, 
+                          genetic = T, 
+                          alpha_pil = 0, 
+                          alpha_psl = 0)
+
+pop_df <- results[[1]]
+traits_df <- results[[2]]
+
+pfit <- plot_outcome(df = pop_df, 
+             var_int = "avg_fitness")
+psoc <- plot_outcome(df = pop_df, 
+                     var_int = "soc_learning")
+pind <- plot_outcome(df = pop_df, 
+                     var_int = "ind_learning")
+
+pfit 
+```
+
+As we can see, the average fitnesses stay almost fixed bouncing in between a very small range. The changes are just because individuals have an appropriate but noise appraisals of the traits and therefore there will be small fluctuations depending on the traits that are chosen each turn. 
+
+Let's look at a scenario where traits change a lot and individuals only learn with a small probability. 
+
+```{r}
+set.seed(33)
+results <- stubborn_model(num_rounds = 4, 
+                          num_turns = 200, 
+                          alpha_pr_change = 8, 
+                          genetic = T, 
+                          alpha_pil = 1, 
+                          alpha_psl = 1)
+
+pop_df <- results[[1]]
+traits_df <- results[[2]]
+
+pfit <- plot_outcome(df = pop_df, 
+             var_int = "avg_fitness")
+psoc <- plot_outcome(df = pop_df, 
+                     var_int = "soc_learning")
+pind <- plot_outcome(df = pop_df, 
+                     var_int = "ind_learning")
+
+pfit + psoc + pind
+
+
+```
+
+We notice that fitnesses fluctuate a lot more and that they reach rather low values (like 0.2). We would expect this given the rate at which the traits are changing. The model then seems to be producing results that - at least at face value - seem plausible. 
+
+Now that we know the model provides somewhat expected results, let's explore all 1000 parameter combinations. For each combination, I will run the model 10 times. The next figure shows the average fitness for all 10 runs in each parameter combination. The facets represent the alpha parameter for the beta distribution that determines social learning. The color gradient does the same but for individual exploration. 
+
+```{r}
+results <- read_rds("par_exploration_results.rds")
+
+get_summary_stats <- function(x) {
+df <- results[[x]][[1]]
+
+ms <- df %>% 
+  group_by(run) %>% 
+  summarise(m = mean(avg_fitness)) %>% 
+  pull(m)
+
+summary_stats <- c(avg_fitness = mean(ms), 
+  sd_fitness = sd(ms))
+
+return(summary_stats)
+}
+
+summ_df <- map_df(c(1:1000), 
+                  get_summary_stats)
+
+as_change <- c(rep(1:10, each = 100))
+as_psl <- rep(rep(1:10, each = 10), 10)
+as_pil <- rep(c(rep(c(1:10), 10)), 10)
+
+par_df <- data.frame(alpha_pr_change = as_change, 
+                     alpha_psl = as_psl, 
+                     alpha_pil = as_pil, 
+                     avg_fitness = summ_df$avg_fitness, 
+                     sd_fitness = summ_df$sd_fitness)
+
+par_df %>% 
+  ggplot(aes(alpha_pr_change, avg_fitness, color = alpha_pil)) +
+  geom_point() +
+  facet_wrap( ~ alpha_psl) + 
+  labs(title = "Average fitness across 10 runs", 
+       x = "Pr. traits changing", 
+       y = "Avg. fitness", 
+       color = "Ind. Exploration")
+```
+
+Here, we notice expected patterns. In general, when the probability of individual exploration is low, then the average fitness tends to be lower. This is - unsurprisingly - more pronounced as traits are more likely to change. One thing to notice is that the probability of social learning is not doing much work here. As it increases, the overall pattern does not change considerable. Maybe this is something worth looking into. 
+
+What we have here is a fairly expected story: as the traits become more variable, changing becomes more worthwhile. But the motivating question behind this study is: when does learning become worthwhile or necessary? Below I try to explore another way of approaching this question. 
+
+## Survival Model
+
+I am going to add survival and reproduction to the model above. The goal is to ask this question: when does learning become necessary for a population to survive?
+
+Every turn individuals survive with a probability equal to their current fitness. This is the code for survival: 
+
+```{r, eval=FALSE, echo = TRUE}
+# 3.5 Survival 
+      survives <- rbinom(n = nrow(population[population$status=="A",]), 
+                         size = 1, 
+                         prob = population[population$status=="A",]$fitness)
+      if(sum(survives==0) > 0) {
+        is_dead <- which(population$status=="A")[which(survives==0)]
+        population[is_dead,]$status <- "D"
+      }
+      
+      population[population$status=="D",'fitness'] <- 0
+      
+      # If all fitnesses are 0, everyone dies
+      if (sum(population$fitness)<= 0) {
+        print("Everyone died!")
+        break
+      }
+```
+
+Afterwards, the agents reproduce with probability equal to their standardized fitness. This is how it happens: 
+
+```{r, eval = FALSE, echo=TRUE}
+ # 5. Reproduction
+      if(genetic == TRUE) {
+        if(t %% 1 == 0) {
+          std_fitness <- population[population$status=="A",]$fitness/sum(population[population$status=="A",]$fitness)
+          reproducers <- rbinom(n = nrow(population[population$status=="A",]), 
+                                size = 1, 
+                                prob = std_fitness)
+          does_reproduce <- which(population$status=="A")[which(reproducers ==1)]
+          
+          if (sum(reproducers) > 0) {
+            mini_df <- population[does_reproduce,]
+            population[(last_agent+1):(last_agent+nrow(mini_df)),] <- mini_df
+          }
+          
+          
+          population$fitness <- as.numeric(NA)
+          
+        }
+      }
+```
+
+The whole model, then, looks like this: 
+
+```{r, eval=FALSE, echo = TRUE}
+#### Model ####
+stubborn_model <- function(num_traits = 4,
+                           num_turns = 200,
+                           num_rounds = 2,
+                           N = 50,
+                           sd_exploration = 0.01,
+                           starting_error_sd = 0.01,
+                           alpha_pr_change = 0.5,
+                           alpha_psl = 2,
+                           alpha_pil = 0.8,
+                           genetic = TRUE,
+                           num_rows = 1e5) {
+  #### Set-Up ####
+
+  # Keep record
+  # Create a matrix first - cols number of traits
+  traits_df <- matrix(NA,
+                      nrow = num_rounds * num_turns,
+                      ncol = 2 + num_traits)
+  # Change the column names
+  colnames(traits_df) <- c("run",
+                           "generation",
+                           map_chr(.x = 1:num_traits, ~ paste0("trait", .x)))
+
+  # Turn into a tibble for ease of manipulation
+  traits_df <- data.frame(traits_df)
+
+  # Populate the dataframe
+  traits_df <- traits_df %>%
+    mutate(run = as.factor(rep(1:num_rounds, each = num_turns)),
+           generation = rep(1:num_turns, num_rounds)) %>%
+    mutate(across(.cols = 3:ncol(.), as.numeric))
+
+
+  # Output for the model
+  output <- matrix(NA,
+                   nrow = num_rounds * num_turns,
+                   ncol = 6 + num_traits)
+
+  # Name the columns
+  colnames(output) <- c(
+    "run",
+    "generation",
+    "avg_soc_learning_prob",
+    "avg_ind_learning_prob",
+    "avg_fitness",
+    "number_agents",
+    map_chr(.x = 1:num_traits, ~ paste0("mean_trait", .x))
+  )
+  output <- data.frame(output)
+  # Populate the dataframe
+  output <- output %>%
+    mutate(run = as.factor(rep(1:num_rounds, each = num_turns)),
+           generation = rep(1:num_turns, num_rounds)) %>%
+    mutate(across(.cols = 3:ncol(.), as.numeric))
+
+  # Data frame to keep track of pr_change
+  probs_df <- matrix(data = NA,
+                     ncol = num_traits +1,
+                     nrow = num_rounds)
+  colnames(probs_df) <- c("round",
+                          "trait1",
+                          "trait2",
+                          "trait3",
+                          "trait4")
+  probs_df <- data.frame(probs_df)
+
+  #### The Model ####
+  for (j in 1:num_rounds) {
+    print(paste0("working on: ",
+                 "change: ",
+                 alpha_pr_change,
+                 "social: ",
+                 alpha_psl,
+                 "individual: ",
+                 alpha_pil,
+                 "round: ",
+                 j))
+    # Probabilities that each trait changes
+    pr_change <- rbeta(n = num_traits,
+                       shape1 = alpha_pr_change,
+                       shape2 = 5)
+    probs_df[j,] <- c(j, pr_change)
+
+    # Draw initial values for the traits
+    traits_init <- runif(n = num_traits,
+                         min = 0,
+                         max = 1)
+    traits_df[traits_df$run==j&traits_df$generation==1,3:ncol(traits_df)] <- c(traits_init)
+    # Dataframe for population
+    population <- matrix(NA,
+                         nrow = num_rows,
+                         ncol = 4 + num_traits)
+    # Change the column names
+    colnames(population) <- c(
+      "status",
+      "prob_soc_learns",
+      "prob_ind_learns",
+      "fitness",
+      map_chr(.x = 1:num_traits, ~ paste0("trait", .x))
+    )
+    population <- data.frame(population)
+
+    population <- population %>%
+      mutate(status = c(rep("A",N), rep("D", num_rows-N)),
+             prob_soc_learns = rbeta(1e5, alpha_psl, 5),
+             prob_ind_learns = rbeta(1e5, alpha_pil, 5),
+             across(.cols = 2:ncol(.), as.numeric))
+
+    # List of starting values (with slight error)
+    list_starting_values <- map(.x = 1:num_traits,
+                                ~ rnorm(mean = 0,
+                                        sd = starting_error_sd,
+                                        n = N) + rep(traits_init[.x], N))
+    # Assign starting values
+    for (s in 1:num_traits) {
+      population[,s+4] <- list_starting_values[[s]]
+    }
+
+    for (t in 1:num_turns) {
+      #### One turn ####
+      last_agent <- which(population$status == "A")[length(which(population$status == "A"))]
+
+      # 1. Change in traits?
+      # Do the traits change?
+      traits_change <- rbinom(n = num_traits,
+                              size = 1,
+                              prob = pr_change)
+
+      if(t == 1) {
+        traits_df[traits_df$run==j&traits_df$generation==t,c(which(traits_change==1)+2)] <- as.list(runif(sum(traits_change)))
+      } else {
+        traits_df[traits_df$run==j&traits_df$generation==t,3:ncol(traits_df)] <- traits_df[traits_df$run==j&traits_df$generation==t-1,3:ncol(traits_df)]
+        traits_df[traits_df$run==j&traits_df$generation==t,c(which(traits_change==1)+2)] <- as.list(runif(sum(traits_change)))
+      }
+
+      # 2. Draw trait & learning
+      # One trait gets drawn
+      current_trait <- sample(1:num_traits,
+                              size = 1)
+      # How many social learners?
+      learns <- rbinom(n = nrow(population[population$status=="A",]),
+                       size = 1,
+                       prob = population[population$status=="A",]$prob_soc_learns)
+      # Get a vector of learners
+      learners <- which(population$status=="A")[which(learns ==1)]
+      # Update these
+      population[learners,current_trait+4] <- sample(population[population$status == "A", current_trait + 4],
+                                                     sum(learns))
+
+      # Now see who explores individually
+      explorers <- rbinom(n = nrow(population[population$status=="A",]),
+                          size = 1,
+                          prob = population[population$status=="A",]$prob_ind_learns)
+      does_explore <- which(population$status=="A")[which(explorers ==1)]
+
+      # Explorers get knowledge of the trait with some error
+      population[does_explore,current_trait+4] <- rnorm(n = sum(explorers),
+                                                        mean = traits_df[traits_df$run==j&traits_df$generation==t,current_trait+2],
+                                                        sd = sd_exploration)
+      # Record the means
+      for (m in 1:num_traits) {
+        output[output$generation==t &
+                 output$run==j,m+6] <- mean(population[[m+4]])
+      }
+
+      # 3. Calculate fitness
+      # Get difference between chosen trait and responses
+      population[population$status=="A",]$fitness <- 1-abs(population[population$status=="A",4+current_trait] - traits_df[traits_df$run==j&traits_df$generation==t,
+                                                                                                                          2+current_trait])
+      # Make sure we don't get any above ones and below 0s
+    if(sum(population[population$status=="A",]$fitness < 0) > 0) {
+    population[population$status=="A" & population$fitness < 0,]$fitness <- 0
+    }
+    if(sum(population[population$status=="A",]$fitness > 1) > 0) {
+      population[population$status=="A" & population$fitness > 1,]$fitness <- 1
+    }
+ # 3.5 Survival
+      survives <- rbinom(n = nrow(population[population$status=="A",]),
+                         size = 1,
+                         prob = population[population$status=="A",]$fitness)
+      if(sum(survives==0) > 0) {
+        is_dead <- which(population$status=="A")[which(survives==0)]
+        population[is_dead,]$status <- "D"
+      }
+
+      population[population$status=="D",'fitness'] <- 0
+
+      # If all fitnesses are 0, everyone dies
+      if (sum(population$fitness)<= 0) {
+        print("Everyone died!")
+        break
+      }
+
+      # 4. Store population characteristics
+      output[output$generation==t &
+               output$run==j,]$avg_fitness <- mean(population[population$status=="A",]$fitness, na.rm = T)
+      output[output$generation==t &
+               output$run==j,]$avg_soc_learning_prob <- mean(population[population$status=="A",]$prob_soc_learns)
+      output[output$generation==t &
+               output$run==j,]$avg_ind_learning_prob <- mean(population[population$status=="A",]$prob_ind_learns)
+
+
+      # 5. Reproduction
+      if(genetic == TRUE) {
+        if(t %% 1 == 0) {
+          std_fitness <- population[population$status=="A",]$fitness/sum(population[population$status=="A",]$fitness)
+          reproducers <- rbinom(n = nrow(population[population$status=="A",]),
+                                size = 1,
+                                prob = std_fitness)
+          does_reproduce <- which(population$status=="A")[which(reproducers ==1)]
+
+          if (sum(reproducers) > 0) {
+            mini_df <- population[does_reproduce,]
+            population[(last_agent+1):(last_agent+nrow(mini_df)),] <- mini_df
+          }
+
+
+          population$fitness <- as.numeric(NA)
+
+        }
+      }
+      output[output$generation==t &
+               output$run==j,]$number_agents <- nrow(population[population$status=="A",])
+
+    }
+
+  }
+
+  return(list(output,
+              traits_df,
+              probs_df))
+
+
+}
+```
+
+To explore the parameter space with this model, I will look at ten evenly spaced values from 0 to 5. The reasoning behind this choice is that perhaps we need a more granular analysis for this model, because slight changes in the Beta distributions might have a bigger impact. 
+
+The next figure shows the average number of agents at the end of the run for all 10 runs in each parameter combination. The facets represent the alpha parameter for the beta distribution that determines social learning. The color gradient does the same but for individual exploration. 
+
+```{r}
+results <- read_rds("survival_par_exploration_results.rds")
+
+get_summary_stats <- function(x) {
+  df <- results[[x]][[1]]
+  
+  ms <- df %>% 
+    group_by(run) %>% 
+    arrange(desc(generation)) %>% 
+    slice(1) %>% 
+    pull(number_agents)
+  
+  ms <- replace_na(ms, 0)
+  
+  summary_stats <- c(avg_num_agents = mean(ms), 
+                     sd_fitness = sd(ms))
+  
+  return(summary_stats)
+}
+
+summ_df <- map_df(c(1:1000), 
+                  get_summary_stats)
+
+our_values <- round(seq(from = 0,
+                  to = 5,
+                  length = 10), 
+                  2)
+
+as_change <- c(rep(our_values, each = 100))
+as_psl <- rep(rep(our_values, each = 10), 10)
+as_pil <- rep(c(rep(our_values, 10)), 10)
+
+par_df <- data.frame(alpha_pr_change = as_change,
+                     alpha_psl = as_psl,
+                     alpha_pil = as_pil, 
+                     agents_last_turn = summ_df$avg_num_agents, 
+                     sd_agents_last_turn = summ_df$sd_fitness)
+
+par_df %>% 
+  ggplot(aes(alpha_pr_change, agents_last_turn, color = alpha_pil)) +
+  geom_point(alpha = 0.5) +
+  facet_grid(~alpha_psl) + 
+  labs(title = "Average number of agents in the last turn", 
+       x = "Pr. traits changing", 
+       y = "Num. Agents", 
+       color = "Ind. Exploration")
+```
+
+Again, notice that social learning has little importance in the survival of agents across the simulation; the patterns are almost the same across the facets. But individual learning plays a key role. As the probability that traits change increases, a higher probability of exploration means higher chances of survival. Notice that when individual exploration is almost non-existent, most populations die off before the run finishes. Maybe an opportunity for analysis here is to ask: at which rate of change does learning become necessary for survival? 
+
+There is also a big gap between no change and some change (alpha = 0.55). Perhaps it is worth it to explore the space between these values. 
+
+
