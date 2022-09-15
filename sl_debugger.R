@@ -2,21 +2,31 @@ library(tidyverse)
 library(patchwork)
 theme_set(theme_minimal())
 #### Parameter Block ###
-num_traits = 100
+num_traits = 50
 num_turns = 200
-num_rounds = 5
+num_rounds = 4
 N = 100
-sd_exploration = 0.1
+sd_exploration = 0.05
 starting_error_sd = 0.0
 alpha_pr_change = 0.0
 prob_learning  = 1
-prob_ind = 0.5 
+prob_ind = 1 
 genetic = F
 beta_pr_change = 1
 starting_subset = 2
-transform_exp = 1.5 
-p_exp = 0.2
+transform_exp = 0.05
+p_exp = 0.05
 
+#### Helper function #### 
+distance_transformation <- function(x) {
+  
+  distances <- abs(as.numeric(population[x, 5:ncol(population)]) - as.numeric(traits_df[traits_df$run ==
+                                                                                          j & traits_df$generation == t, 
+                                                                                        3:ncol(traits_df)]))
+  distance_transformed <- 1 - (distances + distances^(transform_exp))
+  fitness <- ifelse(distance_transformed == 0, 1, distance_transformed)
+  return(sum(fitness, na.rm = T)/num_traits)
+}
 
 ### The Model ####
 # Keep record
@@ -89,8 +99,8 @@ for (j in 1:num_rounds) {
                      shape1 = alpha_pr_change,
                      shape2 = beta_pr_change)
   probs_df[j, ] <- c(j, pr_change)
- 
-    # Draw initial values for the traits
+  
+  # Draw initial values for the traits
   traits_init <- runif(n = num_traits,
                        min = 0,
                        max = 1)
@@ -117,7 +127,7 @@ for (j in 1:num_rounds) {
       strategy = sample(size = N, c("stay", "explore"), prob = c(1-p_exp, p_exp), replace = T),
       across(.cols = 2:ncol(.), as.numeric)
     )
-
+  
   # Here we start to change from our previous model
   # Starting values are only a fraction 
   # This loop does it; every agent starts with half 
@@ -157,10 +167,6 @@ for (j in 1:num_rounds) {
     }
     
     # 2. Learning 
-    # One trait gets drawn
-    current_traits <- sample(1:num_traits,
-                             size = N,
-                             replace = T)
     # How many learners?
     explorers <- which(population$strategy=="explore")
     
@@ -180,18 +186,20 @@ for (j in 1:num_rounds) {
     if (sum(individual_explorers) > 0) {
       for (x in 1:sum(individual_explorers)) {
         learning_agent <- explorers[which(learns ==1)][which(individual_explorers == 1)][x]
-        population[learning_agent,4+current_traits[learning_agent]] <- rnorm(n = 1,
-                                                         mean =  traits_df[traits_df$run == j &
-                                                                             traits_df$generation == t, 
-                                                                           current_traits[learning_agent] + 2],
+        what_trait <- ifelse(is_empty(which(is.na(population[learning_agent,5:ncol(population)]))), 
+                             sample(c(1:num_traits), 1), 
+                             sample(which(is.na(population[learning_agent,5:ncol(population)])), 1))
+        population[learning_agent,4+what_trait] <- rnorm(n = 1,
+                                                         mean = traits_df[traits_df$run == j &
+                                                                            traits_df$generation == t, 
+                                                                          what_trait + 2],
                                                          sd = sd_exploration)
         
       }
     }
     et <- Sys.time()
     
-    print(paste("explorers' loop", round(et-st, 5), sep = " "))
-    
+    print(paste("explorers' loop", round(et-st, 4), sep = "-"))
     # Update non-explorers 
     # Count how many there are
     non_explorers <-  sum(learns) - sum(individual_explorers)
@@ -201,18 +209,22 @@ for (j in 1:num_rounds) {
       for (z in 1:non_explorers) {
         learning_nex <- explorers[which(learns ==1)][which(individual_explorers == 0)][z]
         demonstrator <- sample(c(1:N)[-learning_nex], 1)
+        what_trait <- ifelse(is_empty(which(is.na(population[learning_nex,5:ncol(population)]))), 
+                             sample(c(1:num_traits), 1), 
+                             sample(which(is.na(population[learning_nex,5:ncol(population)])), 1))
         population[learning_nex,
-                   current_traits[learning_nex] + 3]  <-
-          ifelse(is.na(population[demonstrator, current_traits[learning_nex] + 3]), 
+                   what_trait + 3]  <-
+          ifelse(is.na(population[demonstrator, what_trait + 3]), 
                  population[learning_nex,
-                            current_traits[learning_nex] + 3], 
-                 population[demonstrator, current_traits[learning_nex] + 3])
+                            what_trait + 3], 
+                 population[demonstrator, what_trait + 3])
         
       }
     }
-   et <- Sys.time()
-   
-   print(paste("learners' loop", round(et-st, 5), sep = " "))
+    et <- Sys.time()
+    
+    print(paste("learners' loop", round(et-st, 4), sep = "-"))
+    
     # Record the means
     for (m in 1:num_traits) {
       output[output$generation == t &
@@ -221,34 +233,26 @@ for (j in 1:num_rounds) {
     
     # 3. Calculate fitness
     # Get difference between chosen trait and responses
-   st <- Sys.time()
-    for (y in 1:N) {
-      if(is.na(population[y, 4 + current_traits[y]])) {
-        population$fitness[y] <- 0
-      } else {
-      distance <-  abs(population[y, 4 + current_traits[y]] - traits_df[traits_df$run ==
-                                                                          j & traits_df$generation == t,
-                                                                        2 +
-                                                                          current_traits[y]][1])
-      distance_transformed <- distance + distance^(transform_exp)
-      population$fitness[y] <- 1 - distance_transformed
-      
-      }
-    }
-   et <- Sys.time() 
-   print(paste("fitness loop", round(et-st), sep = " "))
+    st <- Sys.time()
+    fs <- map_dbl(c(1:N), 
+                  distance_transformation)
+    population$fitness <- fs
+    et <- Sys.time()
+    
+    print(paste("fitness' loop", round(et-st, 4), sep = "-"))
+    
     # 4. Agents copy each other's strategies 
-   st <- Sys.time()
-   dms <- sample(x = c(1:N), 
-                 size = N, 
-                 replace = T)
-   
-   population$strategy <- ifelse(
-     population$fitness < population[dms,]$fitness, 
-     population[dms,]$strategy, 
-     population$strategy)
-   et <- Sys.time() 
-   print(paste("strategy loop", round(et-st, 5), sep = " "))
+    st <- Sys.time()
+    demonstrators <- sample(c(1:N), N, replace = T)
+    
+    population$strategy <- if_else(
+      population$fitness < population[demonstrators,]$fitness, 
+      population[demonstrators,]$strategy, 
+      population$strategy
+    )
+    et <- Sys.time()
+    
+    print(paste("strategy loop", round(et-st, 4), sep = "-"))
     # Record outputs 
     output[output$generation == t &
              output$run == j, ]$avg_fitness <-
@@ -264,7 +268,10 @@ for (j in 1:num_rounds) {
       sum(population$strategy=="explore")/N
   }
 }
-    
+
+
+
+#### Plotting ####
 prb_plot <- output %>% 
   ggplot(aes(x = generation, 
              y = strategy, 
